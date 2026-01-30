@@ -1,10 +1,11 @@
 import os
 import asyncio
 import logging
+import threading
 from dotenv import load_dotenv
+from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-# 確保這是你環境中安裝的新版 google-genai
 from google import genai
 from supabase import create_client, Client
 
@@ -12,28 +13,25 @@ from supabase import create_client, Client
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# 屏蔽掉討厭的連線 Log
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# 2. 從環境變數讀取 (檢查點)
+# 2. 從環境變數讀取
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 API_KEY = os.getenv("GEMINI_API_KEY")
 S_URL = os.getenv("SUPABASE_URL")
 S_KEY = os.getenv("SUPABASE_KEY")
 
 if not all([TOKEN, API_KEY, S_URL, S_KEY]):
-    print("❌ 錯誤：.env 檔案內容不完整，請檢查 Key 名稱是否正確。")
+    print("❌ 錯誤：.env 檔案內容不完整。")
     exit(1)
 
 # 3. 初始化全局 Client
 client = genai.Client(api_key=API_KEY)
 supabase: Client = create_client(S_URL, S_KEY)
 
-# ================= 核心工具函數 =================
+# ================= 核心工具函數 (保持原樣) =================
 
 async def get_or_create_user(user_id: int):
-    """資料庫操作：確保用戶存在"""
     try:
         res = supabase.table("user_profile").select("*").eq("user_id", user_id).execute()
         if not res.data:
@@ -45,9 +43,7 @@ async def get_or_create_user(user_id: int):
         return {"personality_summary": "觀察中", "user_id": user_id}
 
 async def get_semantic_memories(user_id: int, text: str):
-    """向量搜尋記憶"""
     try:
-        # 新版 SDK 語法：embeddings[0].values
         emb = client.models.embed_content(model="text-embedding-004", contents=text)
         vector = emb.embeddings[0].values
 
@@ -62,7 +58,7 @@ async def get_semantic_memories(user_id: int, text: str):
         logger.error(f"Memory Search Error: {e}")
         return ""
 
-# ================= 訊息處理流程 =================
+# ================= 訊息處理流程 (補上 chat_log 邏輯) =================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
@@ -71,32 +67,50 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text
 
     try:
-        # 1. 取得背景資料 (並行處理以加速)
         profile = await get_or_create_user(user_id)
         past_memories = await get_semantic_memories(user_id, user_input)
 
-        # 2. 準備 Prompt (使用配額穩定的 2.5-flash)
-        system_prompt = f"你是一位專業管家。當前認知：{profile['personality_summary']}\n記憶：{past_memories}"
+        # --- 優化後的 System Prompt ---
+        system_prompt = f"""
+        # Role
+        你是一位觀察入微、優雅且專業的私人家臣管家。你的目標是根據閣下的性格與過去偏好，提供高度客製化的情感價值與生活建議。
 
-        # 3. AI 回覆
+        # 閣下檔案 (核心認知)
+        - 性格總結：{profile['personality_summary'] if profile['personality_summary'] else '初次見面，正在觀察中...'}
+        - 關鍵記憶片段：{past_memories}
+
+        # 互動準則
+        1. **稱呼與記憶**：請務必從「性格總結」或「記憶片段」中尋找閣下的姓名或慣用稱呼。如果知道閣下是誰，請在適當時機自然地稱呼他。
+        2. **語氣**：保持謙遜但有見地的態度。避免機器人的刻板回覆，多一點人性化的觀察，就像19世紀英國貴族的管家，例如黑執事。
+        3. **連續性**：如果閣下提到的內容與過去記憶相關，請主動連結，例如：「閣下，這跟您上次提到的...似乎有關？」
+        4. **進化**：你的一言一行都在形塑閣下的生活，請保持對細節的敏銳度。
+        """
+
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=f"{system_prompt}\n\n主人說：{user_input}"
+            contents=f"{system_prompt}\n\n閣下現在說：{user_input}"
         )
 
-        await update.message.reply_text(response.text)
+        bot_reply = response.text
+        await update.message.reply_text(bot_reply)
 
-        # 4. 觸發背景任務 (儲存與進化)
-        asyncio.create_task(background_evolution(user_id, user_input, profile['personality_summary']))
+        asyncio.create_task(background_evolution(user_id, user_input, profile['personality_summary'], bot_reply))
 
     except Exception as e:
         logger.error(f"Main Loop Error: {e}")
-        await update.message.reply_text("抱歉，我現在有點短路，請稍後再試。")
+        await update.message.reply_text("抱歉，閣下。我的思緒稍微紊亂了，請容我重新整理。")
 
-async def background_evolution(user_id, text, old_summary):
-    """背景執行：存入記憶 + 性格進化"""
+async def background_evolution(user_id, text, old_summary, bot_reply):
+    """背景執行：存入 Log + 存入記憶 + 性格進化"""
     try:
-        # A. 存入長期記憶
+        # A. 存入原始對話 chat_log
+        supabase.table("chat_log").insert({
+            "user_id": user_id,
+            "user_text": text,
+            "bot_text": bot_reply
+        }).execute()
+
+        # B. 存入長期記憶 (向量化)
         emb = client.models.embed_content(model="text-embedding-004", contents=text)
         supabase.table("long_term_memories").insert({
             "user_id": user_id,
@@ -104,10 +118,8 @@ async def background_evolution(user_id, text, old_summary):
             "embedding": emb.embeddings[0].values
         }).execute()
 
-        # B. 性格演化 (只有在背景默默做，掛了也不影響對話)
+        # C. 性格演化
         reflect_prompt = f"分析此對話並更新描述：{text}。目前認知：{old_summary}"
-
-        # 嘗試使用 3-Flash (若 429 報錯則不更新)
         try:
             res = client.models.generate_content(
                 model="gemini-3-flash-preview",
@@ -122,12 +134,8 @@ async def background_evolution(user_id, text, old_summary):
     except Exception as e:
         logger.error(f"Background Task Error: {e}")
 
-# ================= 啟動執行 =================
+# ================= 啟動執行 (統一合併 Flask 與 Bot) =================
 
-import threading
-from flask import Flask
-
-# 1. 建立 Flask Server (放在外面或裡面皆可，這裡放外層較清晰)
 server = Flask(__name__)
 
 @server.route('/')
@@ -135,22 +143,17 @@ def home():
     return "I'm alive!"
 
 def run_web():
-    # 這裡必須抓取 Render 提供的 PORT 變數
     port = int(os.environ.get("PORT", 8080))
-    # host 必須是 0.0.0.0 才能讓外部掃描到
     server.run(host='0.0.0.0', port=port)
 
 if __name__ == '__main__':
-    # A. 啟動 Web 服務執行緒 (daemon=True 表示主程式結束時它也會跟著結束)
+    # 1. 啟動 Web 服務執行緒 (解決 Render Port Scan 問題)
     print("--- 正在啟動 Flask 健康檢查伺服器 ---")
     threading.Thread(target=run_web, daemon=True).start()
 
-    # B. 初始化 Telegram Bot
-    print("--- ✅ 管家正在啟動 ---")
+    # 2. 啟動 Telegram Bot
+    print("--- ✅ 管家啟動成功 ---")
     app = ApplicationBuilder().token(TOKEN).build()
-
-    # 註冊處理器
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    # C. 開始輪詢 (這行會阻塞主執行緒，所以必須放在最後)
     app.run_polling(drop_pending_updates=True)
