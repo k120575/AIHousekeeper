@@ -58,7 +58,7 @@ async def get_semantic_memories(user_id: int, text: str):
         logger.error(f"Memory Search Error: {e}")
         return ""
 
-# ================= 訊息處理流程 (補上 chat_log 邏輯) =================
+# ================= 訊息處理流程 (補上 chat_logs 邏輯) =================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
@@ -103,8 +103,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def background_evolution(user_id, text, old_summary, bot_reply):
     """背景執行：存入 Log + 存入記憶 + 性格進化"""
     try:
-        # A. 存入原始對話 chat_log
-        supabase.table("chat_log").insert({
+        # A. 存入原始對話 chat_logs
+        supabase.table("chat_logs").insert({
             "user_id": user_id,
             "user_text": text,
             "bot_text": bot_reply
