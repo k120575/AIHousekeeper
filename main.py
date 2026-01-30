@@ -124,37 +124,33 @@ async def background_evolution(user_id, text, old_summary):
 
 # ================= 啟動執行 =================
 
-if __name__ == '__main__':
-    # 建立應用程式
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    # 加入訊息處理器
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-
-    print("--- ✅ 管家啟動成功 ---")
-    app.run_polling()
-
-
 import threading
 from flask import Flask
 
-# 建立一個極簡的 Flask Web Server
-server = Flask('')
+# 1. 建立 Flask Server (放在外面或裡面皆可，這裡放外層較清晰)
+server = Flask(__name__)
 
 @server.route('/')
 def home():
     return "I'm alive!"
 
 def run_web():
-    # Render 會給一個 PORT 環境變數，沒給就預設 8080
+    # 這裡必須抓取 Render 提供的 PORT 變數
     port = int(os.environ.get("PORT", 8080))
+    # host 必須是 0.0.0.0 才能讓外部掃描到
     server.run(host='0.0.0.0', port=port)
 
 if __name__ == '__main__':
-    # 啟動 Web 服務執行緒 (為了 Render 的健康檢查)
-    threading.Thread(target=run_web).start()
+    # A. 啟動 Web 服務執行緒 (daemon=True 表示主程式結束時它也會跟著結束)
+    print("--- 正在啟動 Flask 健康檢查伺服器 ---")
+    threading.Thread(target=run_web, daemon=True).start()
 
-    # 原有的 Bot 啟動邏輯
+    # B. 初始化 Telegram Bot
+    print("--- ✅ 管家正在啟動 ---")
     app = ApplicationBuilder().token(TOKEN).build()
+
+    # 註冊處理器
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    app.run_polling()
+
+    # C. 開始輪詢 (這行會阻塞主執行緒，所以必須放在最後)
+    app.run_polling(drop_pending_updates=True)
