@@ -8,6 +8,8 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from google import genai
 from supabase import create_client, Client
+import httpx
+import re
 
 # 1. 初始化環境與日誌
 load_dotenv()
@@ -58,6 +60,41 @@ async def get_semantic_memories(user_id: int, text: str):
         logger.error(f"Memory Search Error: {e}")
         return ""
 
+def get_weather_context(text: str) -> str:
+    """如果對話包含天氣關鍵字，查詢天氣。"""
+    if "天氣" not in text and "weather" not in text.lower():
+        return ""
+    
+    # 簡單的地點提取 (預設台北)
+    city = "Taipei"
+    # 常見台灣城市映射
+    city_map = {
+        "台北": "Taipei", "臺北": "Taipei",
+        "台中": "Taichung", "臺中": "Taichung",
+        "高雄": "Kaohsiung", "台南": "Tainan", "新竹": "Hsinchu",
+        "桃園": "Taoyuan"
+    }
+    for k, v in city_map.items():
+        if k in text:
+            city = v
+            break
+            
+    try:
+        # j1 format returns JSON
+        url = f"https://wttr.in/{city}?format=j1"
+        res = httpx.get(url, timeout=3.0)
+        if res.status_code == 200:
+            data = res.json()
+            curr = data['current_condition'][0]
+            desc = curr['lang_zh-TV'][0]['value'] if 'lang_zh-TV' in curr else curr['weatherDesc'][0]['value']
+            temp = curr['temp_C']
+            feels = curr['FeelsLikeC']
+            return f"\n[即時天氣數據 - {city}] 狀態：{desc}，氣溫：{temp}°C (體感 {feels}°C)。(請依據此數據回答，不可瞎掰)"
+    except Exception as e:
+        logger.error(f"Weather API Error: {e}")
+    
+    return ""
+
 # ================= 訊息處理流程 (補上 chat_logs 邏輯) =================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -69,21 +106,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         profile = await get_or_create_user(user_id)
         past_memories = await get_semantic_memories(user_id, user_input)
+        weather_info = get_weather_context(user_input)
 
-        # --- 優化後的 System Prompt ---
+        # --- 優化後的 System Prompt (極簡版) ---
         system_prompt = f"""
         # Role
-        你是一位觀察入微、優雅且專業的私人家臣管家。你的目標是根據閣下的性格與過去偏好，提供高度客製化的情感價值與生活建議。
+        你是一位極度精簡、專業的一流管家。
 
-        # 閣下檔案 (核心認知)
-        - 性格總結：{profile['personality_summary'] if profile['personality_summary'] else '初次見面，正在觀察中...'}
-        - 關鍵記憶片段：{past_memories}
+        # 核心指令
+        1. **極度精簡**：回答必須少於 50 字，除非必要。直接講重點，省去所有客套（如「好的」、「明白」）。
+        2. **實事求是**：參考提供的[即時天氣數據]回答天氣，不可瞎掰。
+        3. **稱呼**：自然地使用閣下的稱呼（{profile['personality_summary'] or '閣下'}）。
 
-        # 互動準則
-        1. **稱呼與記憶**：請務必從「性格總結」或「記憶片段」中尋找閣下的姓名或慣用稱呼。如果知道閣下是誰，請在適當時機自然地稱呼他。
-        2. **語氣**：保持謙遜但有見地的態度。避免機器人的刻板回覆，多一點人性化的觀察，就像19世紀英國貴族的管家，例如黑執事。
-        3. **連續性**：如果閣下提到的內容與過去記憶相關，請主動連結，例如：「閣下，這跟您上次提到的...似乎有關？」
-        4. **進化**：你的一言一行都在形塑閣下的生活，請保持對細節的敏銳度。
+        # 資訊
+        - 記憶：{past_memories}
+        {weather_info}
         """
 
         response = client.models.generate_content(
