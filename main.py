@@ -184,13 +184,34 @@ def run_web():
     server.run(host='0.0.0.0', port=port)
 
 if __name__ == '__main__':
-    # 1. 啟動 Web 服務執行緒 (解決 Render Port Scan 問題)
-    print("--- 正在啟動 Flask 健康檢查伺服器 ---")
-    threading.Thread(target=run_web, daemon=True).start()
-
-    # 2. 啟動 Telegram Bot
-    print("--- ✅ 管家啟動成功 ---")
+    # 1. 初始化 Bot
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    
+    # 2. 檢查模式 (Webhook vs Polling)
+    # Render 等平台會自動提供 RENDER_EXTERNAL_URL 或我們自己設定 WEBHOOK_URL
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL") or os.getenv("RENDER_EXTERNAL_URL")
+    PORT = int(os.environ.get("PORT", 8080))
 
-    app.run_polling(drop_pending_updates=True)
+    if WEBHOOK_URL:
+        # --- Webhook 模式 (雲端部署用) ---
+        print(f"--- 🚀 啟動 Webhook 模式 (Port {PORT}) ---")
+        print(f"--- URL: {WEBHOOK_URL} ---")
+        
+        # 啟動 Webhook，同時監聽 Port，這樣就不需要額外的 Flask Server 了
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            url_path="telegram",
+            webhook_url=f"{WEBHOOK_URL}/telegram",
+            drop_pending_updates=True
+        )
+    else:
+        # --- Polling 模式 (本地開發用) ---
+        print("--- 🐢 啟動 Polling 模式 (本地開發) ---")
+        print("--- 正在啟動 Flask 健康檢查伺服器 (保持相容性) ---")
+        # 只有在 Polling 模式才需要額外開 Flask 來佔用 Port (如果平台強制要求)
+        threading.Thread(target=run_web, daemon=True).start()
+        
+        print("--- ✅ 管家啟動成功 ---")
+        app.run_polling(drop_pending_updates=True)
