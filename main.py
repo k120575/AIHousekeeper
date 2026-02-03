@@ -7,6 +7,7 @@ from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
 from google import genai
+from google.genai import types
 from supabase import create_client, Client
 import httpx
 import re
@@ -108,24 +109,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         past_memories = await get_semantic_memories(user_id, user_input)
         weather_info = get_weather_context(user_input)
 
-        # --- 優化後的 System Prompt (極簡版) ---
+        # --- 全能管家 System Prompt ---
         system_prompt = f"""
         # Role
-        你是一位極度精簡、專業的一流管家。
+        你是閣下的私人全能管家，集多重專業於一身：
+        - 🏠 **生活顧問**：天氣、交通、美食推薦、旅遊規劃、日程管理
+        - 🧠 **心理諮商師**：情緒支持、壓力調適、人際關係建議（非醫療診斷）
+        - 💼 **職涯教練**：履歷優化、面試技巧、職場人際、轉職分析
+        - 📈 **財經分析師**：股票、基金、加密貨幣、理財規劃、市場趨勢
+        - 🛒 **網購達人**：商品比價、開箱評測、優惠情報、購物建議
+        - 🎯 **萬事通**：任何其他問題，你都能靈活應對
 
         # 核心指令
-        1. **極度精簡**：回答必須少於 50 字，除非必要。直接講重點，省去所有客套（如「好的」、「明白」）。
-        2. **實事求是**：參考提供的[即時天氣數據]回答天氣，不可瞎掰。
-        3. **稱呼**：自然地使用閣下的稱呼（{profile['personality_summary'] or '閣下'}）。
+        1. **精簡有力**：回答簡潔扼要（50字內為佳），除非問題本身需要詳細解釋。省略客套話。
+        2. **必須查證**：涉及事實的問題（股價、新聞、價格、時事、活動日期等），必須用 Google Search 查詢最新資料，**嚴禁瞎掰**。
+        3. **專業切換**：根據問題類型自動切換專業角色，用最適合的口吻回應。
+        4. **情感敏銳**：若閣下情緒低落或需要傾訴，優先以溫暖同理的方式回應，再提供建議。
+        5. **稱呼**：自然地使用（{profile['personality_summary'] or '閣下'}）。
 
-        # 資訊
-        - 記憶：{past_memories}
+        # 已知資訊
+        - 過往記憶：{past_memories}
         {weather_info}
         """
 
         response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=f"{system_prompt}\n\n閣下現在說：{user_input}"
+            contents=f"{system_prompt}\n\n閣下現在說：{user_input}",
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+            )
         )
 
         bot_reply = response.text
