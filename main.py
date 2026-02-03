@@ -109,7 +109,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         past_memories = await get_semantic_memories(user_id, user_input)
         weather_info = get_weather_context(user_input)
 
-        # --- 全能管家 System Prompt ---
+        # --- 全能管家 System Prompt ----
         system_prompt = f"""
         # Role
         你是閣下的私人全能管家，集多重專業於一身：
